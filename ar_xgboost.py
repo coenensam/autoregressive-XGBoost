@@ -99,11 +99,11 @@ returns = (np.array(data['PRC'][return_span:])-np.array(
     data['PRC'][:-(return_span)]))/np.array(
         data['PRC'][:-(return_span)])
         
-''' lag_inpupt creates the vector of dependent variables from  'y' and 
+""" lag_inpupt creates the vector of dependent variables from  'y' and 
 the matrix of regressors from 'x'. n_x_lags is the number of lags to 
 create for the variables in x. lag_length is the length of lags. 
 To include an intercept set it to 1. The default value is 0 which indicates
-no intercept. '''        
+no intercept. """        
 def lag_input(y, x, n_x_lags, lag_length, intercept=0):
     y = y[n_x_lags*lag_length:]
     temp = np.ones((len(y),1))
@@ -196,14 +196,14 @@ def hessian(x):
     return hess
 
 
-'''To split a leaf we need to compare the possible scores, one for each possible split.
+"""To split a leaf we need to compare the possible scores, one for each possible split.
 In order to do so, we need to know what the subset of 'x' for the current leaf is. The argument
 'x' in this function already contains the current subset.
 Then, calculate the score using the current subset, the subset resulting from split 1
 and the subset resulting from split 2. 'split_val' is the value of the split, 
 'split_var' is the feature that determines the split, grad and hess are the gradients
 and hessians, 'y' is the vector of target variables corresponding to the subset 
-of the current leaf. It returns the score and the two subsets resulting from the split.'''
+of the current leaf. It returns the score and the two subsets resulting from the split."""
 def score(split_val,split_var,grad,hess,llambda,gamma,x,y):
     split2 = x[:,split_var]>split_val
     split1 = x[:,split_var]<=split_val
