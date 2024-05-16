@@ -1,13 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Thu Aug 24 22:20:20 2023
-
-@author: sam37
-"""
-
 # Single-output variation of the AR-XGBOOST algorithm.
-# 200 bins for the approximate split finding.
-# Splits were executed 1 layer at a time.
 
 import os
 import pandas as pd
@@ -22,33 +13,55 @@ import statsmodels.api as sm
 # start_time = time.time()  # Used to measure the runtime starting from this point
 
 
-path = 'C:\\Users\\sam37\\Desktop\\Master-Thesis\\Data'   # Directory to access data
+path = 'C:\\Users\\sam37\\Desktop\\Master-Thesis\\Data' # Directory to access data
 os.chdir(path)
 
 
 # Dataset containing prices
 data = pd.read_csv('3571from1995ns.csv') 
+
 # Dataset containing fundamentals 
 finstat = pd.read_csv('finstat.csv')  
-finstat = finstat.rename(columns={'dvpspq':'div','epspxq':'eps','oancfy':'cf','oibdpq':'opin','saleq':'sales'})
+
+finstat = finstat.rename(columns={'dvpspq':'div','epspxq':'eps',
+                                  'oancfy':'cf','oibdpq':'opin',
+                                  'saleq':'sales'})
 
 
-# Delete the stocks for which there is no full time series
-cross_tickers = list(set(data['TICKER']) & set(finstat['tic']))
-unique_tic = data['TICKER'].unique()
-tic_to_drop = list(set(unique_tic)-set(cross_tickers))
-for tic in tic_to_drop:
-    data = data.drop(data[data['TICKER']==tic].index)
-    
+# Explore lentghs of time-series for each stock and keep stocks with 
+# full time-series)
+len_data = data.groupby('TICKER').apply(len)
 
-# Because some time series are fragmented we need to regroup them
-indexx = np.zeros(len(data))
-i=0
-data['indexx']=indexx
-for tic in data['TICKER'].unique():
-    data.loc[data['TICKER']==tic,'indexx']=list(range(i,i+len(data[data['TICKER']==tic])))
-    i = i+len(data[data['TICKER']==tic])
-data=data.sort_values(by=['indexx'])
+len_fin = finstat.groupby('tic').apply(len)
+
+valid_tic = len_data[len_data==max(len_data)].index
+
+data = data[data['TICKER'].isin(valid_tic)]
+
+finstat = finstat[finstat['tic'].isin(valid_tic)]
+
+finstat = finstat.rename(columns={
+    'dvpspq':'div','epspxq':'eps','oancfy':'cf','oibdpq':'opin','saleq':'sales'
+    })
+
+
+# Explore start and end of datasets
+data['date'] = pd.to_datetime(data['date'], format='%Y/%m/%d')
+
+finstat['datadate'] = pd.to_datetime(finstat['datadate'], format='%Y/%m/%d')
+
+maxfinstat = finstat.groupby('tic').apply(lambda x: max(x['datadate']))
+
+maxdata = data.groupby('TICKER').apply(lambda x: max(x['date']))
+
+minfinstat = finstat.groupby('tic').apply(lambda x: min(x['datadate']))
+
+mindata = data.groupby('TICKER').apply(lambda x: min(x['date']))
+
+
+# Match dates for data about prices with data about fundamentals
+data = data[(data['date']>=max(minfinstat)) & (data['date']<(
+    min(maxfinstat) + pd.DateOffset(months=4)))]
 
 
 # Book value (in millions)
@@ -57,49 +70,18 @@ finstat['bookv'] = finstat['atq'] - finstat['ltq']  # assets - liabilities
 data['mktv'] = data['PRC']*data['SHROUT']  # price * (outstanding shares)
 
 
-# Fundamentals are quarterly data and we need daily financial ratios. 
-# Therefore we need to pair quarterly fundamentals to daily prices.
-# This is done by quarte_to_day.
-# 'Quarterly' is the dataset of fundamentals, 'daily' is the dataset of prices
-# and 'measure' is the label of the fundamental we want to convert to daily series. 
-# It returns 'daily_fin', the series of daily fundamentals.   
-def quarter_to_day(quarterly, daily, measure):
-    date2 = parse(daily['date'].iloc[0]) # Initial date of daily series
-    init_fin = parse(quarterly['datadate'].iloc[0]) # Initial date of quarterly series
-    j=0
-    k=0
-    daily_fin = []
-    # We move the date of daily series forward until it matches the date of the
-    # quarterly series.
-    while date2<init_fin:
-        daily_fin.append(0)
-        j = j+1
-        if j>(len(daily)):
-            break
-        date2 = parse(daily['date'].iloc[j])
-    # For each date of the quarterly series, we repeat the fundamentals on a daily
-    # frequency until the date matches the date of new fundamentals.
-    for d1 in quarterly['datadate']:
-        k=k+1
-        if k>(len(quarterly)-1) or j>(len(daily)-1):
-            break
-        while date2 < parse(quarterly['datadate'].iloc[k]):
-            j=j+1
-            daily_fin.append(quarterly[measure].iloc[k-1])             
-            if j>(len(daily)-1):
-                break          
-            date2 = parse(daily['date'].iloc[j])
-    return daily_fin
+# Transform quarterly series to daily series and add them to the 'data' 
+# DataFrame
+finstat = finstat.rename(columns={'datadate':'date', 'tic':'TICKER'})
 
+temp_finstat = finstat[['date','TICKER','bookv','div','eps','cf','opin','sales']]
 
-# We use 'quarter_to_day' to create the daily series for the 6 fundamentals below.
-for measure in ['bookv','div','eps','cf','opin','sales']:
-    temp = []
-    for tic in data['TICKER'].unique():
-        temp.extend(quarter_to_day(finstat[finstat['tic']==tic],data[data['TICKER']==tic],measure))
-    data[measure]=temp
+data = data.merge(temp_finstat,
+                  on=['TICKER', 'date'], how='left').fillna(method='ffill')
 
-    
+# Select the stock we want to analyze
+data = data[data['TICKER']=='AAPL']
+
 # Build financial ratios dataframe
 fratios = pd.DataFrame()
 fratios['ticker'] = data['TICKER']
@@ -111,131 +93,45 @@ fratios['pcf'] = data['PRC']/data['cf']
 fratios['psales'] = data['PRC']/data['sales']
 
 
-# We analyse the Apple stock. 
-# Select AAPL and leave out all prices for which no corresponding fundamentals 
-# are available.
-start = finstat.loc[finstat['tic']=='AAPL','datadate'].iloc[0]
-data2 = data.loc[data['TICKER']=='AAPL']
-start_index = data2[data2['date']==start].index[0]
-data2 = data2.loc[start_index:,:]
+# Calculate returns
+return_span = 4
+returns = (np.array(data['PRC'][return_span:])-np.array(
+    data['PRC'][:-(return_span)]))/np.array(
+        data['PRC'][:-(return_span)])
+        
+''' lag_inpupt creates the vector of dependent variables from  'y' and 
+the matrix of regressors from 'x'. n_x_lags is the number of lags to 
+create for the variables in x. lag_length is the length of lags. 
+To include an intercept set it to 1. The default value is 0 which indicates
+no intercept. '''        
+def lag_input(y, x, n_x_lags, lag_length, intercept=0):
+    y = y[n_x_lags*lag_length:]
+    temp = np.ones((len(y),1))
+    for i in range(n_x_lags-1,-1,-1):
+        temp = np.concatenate(
+            (temp, x[i*lag_length:-(n_x_lags-i)*lag_length,:]),
+            axis=1)
+    if intercept == 0:
+        return y, temp[:,1:]
+    else:
+        return y, temp
+
+# Prepare inputs
+input_x = np.concatenate(
+    (returns[:,np.newaxis], np.array(fratios.iloc[return_span:, 1:])), axis=1
+    )
 
 
-# 'reg_input' is a function that creates the inputs for the regressions, namely
-# the matrix 'x' of regressors and the vector 'y', the dependent variable.
-# 'y' contains returns, 'x' contains lagged returns and lagged financial ratios.
-# 'data2' is the dataframe that contains prices under the label 'PRC'.
-# 'lag' is the number of lagged days for the variables in 'x'.
-# 'return_span' is the time horizon of returns.
-def reg_input(data2,lag,return_span):
-    returns = (np.array(data2['PRC'][return_span-1:])-np.array(data2['PRC'][:-(return_span-1)]))/np.array(data2['PRC'][:-(return_span-1)])
-    y = returns[lag:]
-    # To use a different stock below, either replace 'AAPL' with another ticker
-    # or simply use the ticker from 'data2'.
-    x = fratios.loc[fratios['ticker']=='AAPL'] 
-    x = x.loc[start_index:,:].iloc[return_span-1:-lag,1:]
-    x = x.to_numpy()
-    lagged_y = np.array(returns[:-lag])
-    lagged_y = np.expand_dims(lagged_y,axis=1)
-    x = np.concatenate((lagged_y,x),axis=1)
-    return y,x
+# Obtain inputs for analysis
+y, x = lag_input(returns, input_x, 2, 5)
+        
 
-
-# Function that forward fills nan values 
-def fill_nan(x):
-    row,col = x.shape
-    mask = np.isnan(x)
-    for i in range(1,row):
-        for j in range(col):
-            if mask[i][j]:
-                x[i][j] =x[i-1][j]
-    return x  
-
-
-# Function that forward fills inf values 
-def fill_inf(x):
-    row,col = x.shape
-    mask = np.isinf(x)
-    for i in range(1,row):
-        for j in range(col):
-            if mask[i][j]:
-                x[i][j] =x[i-1][j]
-    return x 
-
-
-# Function that forward fills zero values (might be used to prevent infinite 
-# values for the RMSPE)
-def fill_zero(x):
-    ids = np.where(x==0)
-    for i in ids[0]:
-        x[i]=x[i-1]
-    return x
-
-
-# Function that calculates the RMSPE. 'y' is the real value, 'y_hat'
-# is the estimate.
-def rmspe(y,y_hat):
-    temp = np.square((y-y_hat)/y)
-    idfinite = np.isfinite(temp)
-    rmspe = np.sqrt(np.mean(temp[idfinite]))
-    return rmspe
-
-
-# We build the input matrices for training and testing.
-# The matrix of regressors 'x' will contain 2 lags of the financial ratios
-# and 2 lags of the returns. 'y' will be a vector of target returns.
-y,x = reg_input(data2,5,5) # First set of lags
-y2,x2 = reg_input(data2,10,5) # Second set of lags
-y = y2 # Our target returns
-x = np.concatenate((x[5:],x2),axis=1) # Our matrix of regressors
 # Separate the input data into train and test
 data_T = len(x)
 x_train = x[0:data_T-1000,:]
 y_train = y[0:data_T-1000]
 x_test = x[data_T-1000:-500,:]
 y_test = y[data_T-1000:-500]
-
-
-# # **Uncomment this section to work with realized volatility**
-# # We first calculate log returns to then calculate realized volatilities
-# log_returns = np.log(np.array(data2['PRC'][1:])/np.array(data2['PRC'][0:-1]))
-# # This function calculates the realized volatility for 'log_returns' over
-# # the time horizon corrisponding to 'span'.
-# def real_vol(log_returns,span):
-#     vol = np.zeros((len(log_returns)-span+1,1))
-#     for i in range(0,len(log_returns)-span+1):
-#         vol[i] = np.sqrt(np.sum(np.square(log_returns[i:i+span])))
-#     return vol
-# # We calculate realized volatilities over 5,10 and 20 days.
-# vol5 = real_vol(log_returns,5)
-# vol10 = real_vol(log_returns,10)
-# vol20 = real_vol(log_returns,20)
-# # The target variable 'y' consists of 5 days realized volatilities.
-# y = vol5[20:,0] 
-# # We create the matrix 'x' of regressors with 2 lags of the 6 financial ratios
-# # and the 5,10 and 20 days realized volatilities.
-# x = fratios.loc[fratios['ticker']==data2['TICKER'].iloc[0]]
-# x = x.loc[start_index:,:].iloc[20:-5,1:]
-# x = x.to_numpy()
-# xx = fratios.loc[fratios['ticker']==data2['TICKER'].iloc[0]]
-# xx = xx.loc[start_index:,:].iloc[15:-10,1:]
-# xx = xx.to_numpy()
-# x = np.concatenate((x,xx),axis=1)
-# x = np.concatenate((x,vol5[15:-5]),axis=1)
-# x = np.concatenate((x,vol10[10:-5]),axis=1)
-# x = np.concatenate((x,vol20[:-5]),axis=1)
-# # We separate the data into training and test sets.
-# data_T = len(x)
-# x_train = x[0:data_T-1000,:]
-# y_train = y[0:data_T-1000]
-# x_test = x[data_T-1000:-500,:]
-# y_test = y[data_T-1000:-500]
-
-
-# Fill all nan and inf values in the data.
-x_train = fill_nan(x_train)
-x_test = fill_nan(x_test)
-x_train = fill_inf(x_train)
-x_test = fill_inf(x_test)
 
 
 # Regress y on x to find a first estimate of beta, beta_0
@@ -245,6 +141,49 @@ model = sm.OLS(y_train,x_train)
 leaff = model.fit()
 beta_0 = leaff.params
 beta_0 = np.ones((n,m))*beta_0.T
+
+
+# # **Uncomment this section to work with realized volatility**
+# # We first calculate log returns to then calculate realized volatilities
+# log_returns = np.log(np.array(data['PRC'][1:])/np.array(data['PRC'][0:-1]))
+
+# # This function calculates the realized volatility for 'log_returns' over
+# # the time horizon corrisponding to 'span'.
+# def real_vol(log_returns,span):
+#     kernel = np.ones(span)
+#     vol = np.sqrt(np.convolve(np.square(log_returns), kernel, mode='valid'))
+#     return vol[:,np.newaxis]
+
+
+# # We calculate realized volatilities over 5,10 and 20 days.
+# vol5 = real_vol(log_returns,5)
+# vol10 = real_vol(log_returns,10)
+# vol20 = real_vol(log_returns,20)
+
+# # The target variable 'y' consists of 5 days realized volatilities.
+# y = vol5[20:,0] 
+
+# # We create the matrix 'x' of regressors with 2 lags of the 6 financial ratios
+# # and the 5,10 and 20 days realized volatilities.
+# y, x = lag_input(vol5, np.array(fratios.iloc[5:,1:]), 2, 5)
+# y = y[10:]
+# x = x[10:,:]
+# x = np.concatenate((x, vol5[15:-5], vol10[10:-5], vol20[:-5]), axis=1)
+
+# # We separate the data into training and test sets.
+# data_T = len(x)
+# x_train = x[0:data_T-1000,:]
+# y_train = y[0:data_T-1000]
+# x_test = x[data_T-1000:-500,:]
+# y_test = y[data_T-1000:-500]
+
+# Function that calculates the RMSPE. 'y' is the real value, 'y_hat'
+# is the estimate.
+def rmspe(y,y_hat):
+    temp = np.square((y-y_hat)/y)
+    idfinite = np.isfinite(temp)
+    rmspe = np.sqrt(np.mean(temp[idfinite]))
+    return rmspe
 
 
 # Functions that calculate the gradient and the hessian for each data point.
@@ -257,14 +196,14 @@ def hessian(x):
     return hess
 
 
-# To split a leaf we need to compare the possible scores, one for each possible split.
-# In order to do so, we need to know what the subset of 'x' for the current leaf is. The argument
-# 'x' in this function already contains the current subset.
-# Then, calculate the score using the current subset, the subset resulting from split 1
-# and the subset resulting from split 2. 'split_val' is the value of the split, 
-# 'split_var' is the feature that determines the split, grad and hess are the gradients
-# and hessians, 'y' is the vector of target variables corresponding to the subset 
-# of the current leaf. It returns the score and the two subsets resulting from the split.
+'''To split a leaf we need to compare the possible scores, one for each possible split.
+In order to do so, we need to know what the subset of 'x' for the current leaf is. The argument
+'x' in this function already contains the current subset.
+Then, calculate the score using the current subset, the subset resulting from split 1
+and the subset resulting from split 2. 'split_val' is the value of the split, 
+'split_var' is the feature that determines the split, grad and hess are the gradients
+and hessians, 'y' is the vector of target variables corresponding to the subset 
+of the current leaf. It returns the score and the two subsets resulting from the split.'''
 def score(split_val,split_var,grad,hess,llambda,gamma,x,y):
     split2 = x[:,split_var]>split_val
     split1 = x[:,split_var]<=split_val
